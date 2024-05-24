@@ -179,10 +179,83 @@ DYLD_INTERPOSE(pt_SecItemAdd, SecItemAdd)
 DYLD_INTERPOSE(pt_SecItemUpdate, SecItemUpdate)
 DYLD_INTERPOSE(pt_SecItemDelete, SecItemDelete)
 
+static bool is_ue(void) {
+    NSURL* appFolder = [[NSBundle mainBundle] bundleURL];
+    NSURL* cookeddata = [appFolder URLByAppendingPathComponent:@"cookeddata"];
+    char const* checkPath = [[cookeddata absoluteString] cStringUsingEncoding:NSUTF8StringEncoding] + 7;
+
+    return !access(checkPath, F_OK);
+}
+
+static char const* ue_fix_filename(char const* restrict filename) {
+    char const* p;
+    if ((p = strstr(filename, "Library//Users"))) {
+        return p + 8;
+    }
+
+    return filename;
+}
+
+static int pt_open(char const* restrict filename, int oflag, ... ) {
+    filename = ue_fix_filename(filename);
+    fprintf(stderr, "[PC-DEBUG]: File open at %s\n", filename);
+
+    if (oflag == O_CREAT) {
+        int mod;
+        va_list ap;
+        va_start(ap, oflag);
+        mod = va_arg(ap, int);
+        va_end(ap);
+
+        return open(filename, O_CREAT, mod);
+    }
+
+    return open(filename, oflag);
+}
+
+static int pt_stat(char const* restrict path, struct stat* restrict buf) {
+    return stat(ue_fix_filename(path), buf);
+}
+
+static int pt_rename(char const* old_name, char const* new_name) {
+    old_name = ue_fix_filename(old_name);
+    new_name = ue_fix_filename(new_name);
+
+    return rename(old_name, new_name);
+}
+
+static int pt_chmod(char const* name, mode_t mode) {
+    return chmod(ue_fix_filename(name), mode);
+}
+
+static int pt_utime(char const* name, struct utimbuf const* time) {
+    return utime(ue_fix_filename(name), time);
+}
+
+static int pt_unlink(char const* name) {
+    return unlink(ue_fix_filename(name));
+}
+
+static int pt_rmdir(char const* name) {
+    return rmdir(ue_fix_filename(name));
+}
+
 @implementation PlayLoader
 
 static void __attribute__((constructor)) initialize(void) {
     [PlayCover launch];
+
+    if (is_ue()) {
+        [PlayKeychain debugLogger:@"UE4 hack enabled"];
+
+        DYLD_INTERPOSE(pt_open, open)
+        DYLD_INTERPOSE(pt_stat, stat)
+        DYLD_INTERPOSE(pt_rename, rename)
+        DYLD_INTERPOSE(pt_chmod, chmod)
+        DYLD_INTERPOSE(pt_utime, utime)
+        DYLD_INTERPOSE(pt_unlink, unlink)
+        DYLD_INTERPOSE(pt_rmdir, rmdir)
+    }
 }
 
 @end
