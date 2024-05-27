@@ -235,6 +235,10 @@ static int pt_rename(char const* old_name, char const* new_name) {
 static void __attribute__((constructor)) initialize(void) {
     [PlayCover launch];
 
+    NSString* playcoverFolder = [NSString stringWithFormat:@"/Users/%@/Library/Containers/io.playcover.PlayCover", NSUserName()];
+    int result = chmod([playcoverFolder cStringUsingEncoding: NSUTF8StringEncoding], S_IRUSR | S_IWUSR | S_IXUSR);
+    if (result) fprintf(stderr, "PC-DEBUG: Failed to grant access to PlayCover; error code: %d\n", errno);
+
     if (is_ue()) {
         [PlayKeychain debugLogger:@"UE4 hack enabled"];
 
