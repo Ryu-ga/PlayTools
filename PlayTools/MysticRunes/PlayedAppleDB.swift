@@ -16,24 +16,45 @@ class PlayKeychainDB: NSObject {
     private var dbVersion: Int = 1
 
     func query(_ attributes: NSDictionary) -> [NSMutableDictionary]? {
-        guard let table_name = attributes[kSecClass] as? String,
-              let primaryColumns = PlayedAppleDBConstants.primaries[table_name as CFString] else {
-            return nil
-        }
-
-        let select_where = primaryColumns.compactMap({
-            guard let attr = attributes[$0] else { return nil } // use only requested ones
-            if CFGetTypeID(attr as CFTypeRef) == CFDataGetTypeID(),
-               let string = (attr as? Data).map({ String(data: $0, encoding: .utf8) }) {
-                return "\($0) LIKE '\(string!)'" // non null-termination in db
-            }
-            return "\($0) = '\(attr)'"
-        }).joined(separator: " AND ")
-        guard select_where.count > 0 else { return nil }
+        var table_name: String = ""
+        var select_query: String = ""
+        var stmt: OpaquePointer? = nil
         let select_limit = attributes[kSecMatchLimit] as? String == kSecMatchLimitOne as String ? 1 : Int.max
 
-        let select_query = "SELECT * FROM \(table_name) WHERE \(select_where) LIMIT \(select_limit)"
-        var stmt: OpaquePointer?
+        if let persistentValue = attributes[kSecValuePersistentRef] as? Data {
+            guard let spacer_index = persistentValue.firstIndex(of: 0),
+                  persistentValue.count - spacer_index < 2,
+                  let mustbe_table_name = String(data: persistentValue.subdata(in: 0..<spacer_index), encoding: .utf8) else {
+                return nil
+            }
+            table_name = mustbe_table_name
+
+            let row_id = persistentValue.subdata(in: spacer_index + 1..<persistentValue.count).withUnsafeBytes { raw_pointer in
+                return raw_pointer.load(as: sqlite3_int64.self)
+            }
+
+            select_query = "SELECT * FROM \(table_name) WHERE id = \(row_id) LIMIT 1"
+        } else {
+            guard let mustbe_table_name = attributes[kSecClass] as? String,
+                  let primaryColumns = PlayedAppleDBConstants.primaries[mustbe_table_name as CFString] else {
+                return nil
+            }
+            table_name = mustbe_table_name
+
+            let select_where = primaryColumns.compactMap({
+                guard let attr = attributes[$0] else { return nil } // use only requested ones
+                if CFGetTypeID(attr as CFTypeRef) == CFDataGetTypeID(),
+                   let string = (attr as? Data).map({ String(data: $0, encoding: .utf8) }) {
+                    return "\($0) LIKE '\(string!)'" // non null-termination in db
+                }
+                return "\($0) = '\(attr)'"
+            }).joined(separator: " AND ")
+            guard select_where.count > 0 else { return nil }
+
+            select_query = "SELECT * FROM \(table_name) WHERE \(select_where) LIMIT \(select_limit)"
+        }
+
+        PlayKeychain.debugLogger("SELECT QUERY: \(select_query)")
 
         var dictArr: [NSMutableDictionary] = []
         guard usingDB({ sqlite3DB in
@@ -109,6 +130,12 @@ class PlayKeychainDB: NSObject {
                 let erorrMessage = String(cString: sqlite3_errmsg(sqlite3DB))
                 PlayKeychain.debugLogger("Failed to insert into db: \(erorrMessage)")
                 return false
+            }
+
+            if attributes[kSecReturnPersistentRef] as? Int == 1 {
+                newDict[kSecValuePersistentRef] = table_name.data(using: .utf8)!
+                    + Data(bytes: "", count: 1) // Spacer(0x00) to parse
+                    + withUnsafeBytes(of: sqlite3_last_insert_rowid(stmt)) { Data($0) }
             }
 
             return sqlite3_step(stmt) == SQLITE_DONE
@@ -305,113 +332,4 @@ class PlayKeychainDB: NSObject {
             return nil
         }
     }
-}
-
-struct PlayedAppleDBConstants {
-    // https://developer.apple.com/documentation/security/keychain_services/keychain_items/item_class_keys_and_values
-    // Synchronizable does not matter.
-    static let primaries = [
-        kSecClassGenericPassword: [
-            kSecAttrAccessGroup,
-            kSecAttrAccount,
-            kSecAttrService
-            // kSecAttrSynchronizable
-        ],
-        kSecClassInternetPassword: [
-            kSecAttrAccessGroup,
-            kSecAttrAccount,
-            kSecAttrAuthenticationType,
-            kSecAttrPath,
-            kSecAttrPort,
-            kSecAttrProtocol,
-            kSecAttrSecurityDomain,
-            kSecAttrServer
-            // kSecAttrSynchronizable
-        ],
-        kSecClassCertificate: [
-            kSecAttrAccessGroup,
-            kSecAttrCertificateType,
-            kSecAttrIssuer,
-            kSecAttrSerialNumber
-            // kSecAttrSynchronizable
-        ],
-        kSecClassKey: [
-            kSecAttrAccessGroup,
-            kSecAttrApplicationLabel,
-            kSecAttrApplicationTag,
-            kSecAttrEffectiveKeySize,
-            kSecAttrKeyClass,
-            kSecAttrKeySizeInBits,
-            kSecAttrKeyType
-            // kSecAttrSynchronizable
-        ],
-        kSecClassIdentity: [
-            kSecAttrAccessGroup,
-            kSecAttrCertificateType,
-            kSecAttrIssuer,
-            kSecAttrSerialNumber
-            // kSecAttrSynchronizable
-        ]
-    ]
-    static let attributes = [
-        kSecClassGenericPassword: [
-            kSecAttrAccessControl,
-            kSecAttrAccessible,
-            kSecAttrCreationDate,
-            kSecAttrModificationDate,
-            kSecAttrDescription,
-            kSecAttrComment,
-            kSecAttrCreator,
-            kSecAttrType,
-            kSecAttrLabel,
-            kSecAttrIsInvisible,
-            kSecAttrIsNegative,
-            kSecAttrGeneric
-        ],
-        kSecClassInternetPassword: [
-            kSecAttrAccessControl,
-            kSecAttrAccessible,
-            kSecAttrCreationDate,
-            kSecAttrModificationDate,
-            kSecAttrDescription,
-            kSecAttrComment,
-            kSecAttrCreator,
-            kSecAttrType,
-            kSecAttrLabel,
-            kSecAttrIsInvisible,
-            kSecAttrIsNegative,
-            kSecAttrGeneric
-        ],
-        kSecClassCertificate: [
-            kSecAttrCertificateEncoding,
-            kSecAttrLabel,
-            kSecAttrSubject,
-            kSecAttrSubjectKeyID,
-            kSecAttrPublicKeyHash
-        ],
-        kSecClassKey: [
-            kSecAttrAccessible,
-            kSecAttrLabel,
-            kSecAttrIsPermanent,
-            kSecAttrCanEncrypt,
-            kSecAttrCanDecrypt,
-            kSecAttrCanDerive,
-            kSecAttrCanSign,
-            kSecAttrCanVerify,
-            kSecAttrCanWrap,
-            kSecAttrCanUnwrap
-        ],
-        kSecClassIdentity: [
-            kSecAttrCertificateEncoding,
-            kSecAttrLabel,
-            kSecAttrSubject,
-            kSecAttrSubjectKeyID,
-            kSecAttrPublicKeyHash
-        ]
-    ]
-    static let values = [
-        kSecValueData,
-        kSecValueRef,
-        kSecValuePersistentRef
-    ]
 }
